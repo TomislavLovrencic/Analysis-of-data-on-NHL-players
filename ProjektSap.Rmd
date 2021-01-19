@@ -1,0 +1,814 @@
+---
+title: "Analiza podataka o igračima NHL lige"
+author: "Tomislav Lovrenčić, Bruno Dević, Domagoj Blažanin, Dino Tognon"
+date: '11.12.2020'
+output:
+  pdf_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+#Učitavanje pomoćnih knjižnica
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(ggpubr)
+library(tidyverse)
+library(rstatix)
+library(nortest)
+library(lubridate)
+library(car)
+
+```
+
+
+# Uvod
+
+Kroz ovaj rad ćemo analizirati podatke o igračima u NHL-u. Većinom ćemo se baviti pitanjem predviđanja plaće i pokušavati odgovoriti na pitanje o kojim atributima igraća ovisi njegova plaća.
+Naš završni cilj je na temelju podataka koje imamo izgraditi linearni model pomoću kojeg ćemo moći predvidjeti plaću igrača. 
+Uz analizu plaće igrača želimo odgovoriti i na druga zanimljiva pitanja kao što su: utječe li preferiranost ruke na poziciju igrača , utječe li težina golmana na njegovu sposobnost, itd.
+
+
+
+# Skup podataka
+
+Koristi se skup podataka o NHL igračima iz 100. sezone NHL-a koja se igra 2016.-2017. godine.
+
+Trideset momčadi natjecalo se u regularnoj sezoni od 82 utakmice od 12. listopada 2016. do 9. travnja 2017. Tijekom tih utakmica prikupljen je obilan broj podataka o igračima koje ćemo u ovom radu koristiti kako bi izgradili pripadne modele koji će nas zanimati te za testiranje hipoteza na koje želimo dobiti odgovor.
+
+Podatci se sastoje od 888 zapisa o igračima, te 95 zapisa o golmanima.
+
+
+
+# Statistička analiza općenito
+
+## Pregled ulaznih podataka
+
+### Dataset Igraci
+```{r igraci dataset}
+
+igraci <- 
+  read.csv("C:/Users/Tomislav Lovrencic/Desktop/SAP-Projekt/igraciProm.csv")
+
+#Izbacivanje viška redova na kraju
+igraci <- igraci[complete.cases(igraci[ , 5:6]),]
+
+```
+Svaki redak predstavlja određenog igraća sa `r ncol(igraci)` podataka o tom igraču. Kako ih ima jako puno izdvojit ćemo najvažnije:
+
+* Salary - plaća igrača
+* PTS - broj bodova koje je igrač osvojio(bod se dobije za gol ili asistenciju)
+* GP - Broj utakmica koje je igrač odigrao u navedenoj sezoni
+* Position - Pozicija na kojoj igrač igra
+* Team - Klub za koji igrač igra (Troslovna kratica)
+* Hand - Ruka koju igrač preferira (L - lijeva, R - Desna)
+* GS - Igračev ukupni Game Score
+* DftYr - Godina u kojoj je igrač draftan
+* DftRd - Runda u kojoj je igrač draftan
+* GS/G - Igračev prosječni Game Score
+* iFF - Broj ne blokiranih udaraca
+* iHA - Broj oduzetih "puckova" na silu
+* TOI/GP - Broj minuta na ledu / broj odigranih utakmica 
+* Born - Datum rođenja
+* Ovrl - Pozicija na draftu
+
+
+### Dataset Golmani
+
+```{r golmani dataset}
+
+golmani <- read.csv("C:/Users/Tomislav Lovrencic/Desktop/SAP-Projekt/golmaniProm.csv")
+
+```
+
+Svaki redak predstavlja određenog golmana s `r ncol(golmani)` podataka o tom golmanu. Kako ih ima jako puno izdvojit ćemo najvažnije:
+
+* Salary - plaća golmana u milijunima dolara
+* SV% - Postotak obrana golmana
+* MIN - Broj minuta koje je golman odigrao u navedenoj sezoni
+* Wt - Težina golmana u funtama
+
+## Provjera zavisnosti igračeve preferirane ruke i njegove pozicije  na terenu
+Zanima nas postoji li zavisnost između ruke kojom igrač igra i pozicije na kojoj igra. Naravno, očekujemo da zavisnost postoji.
+
+```{r, echo=FALSE}
+#Obrada igrača za koje je zapisano više pozicija na način
+#da se uzima samo prva zapisna pozicija
+igraci$Position <- sapply(strsplit(igraci$Position, split = "/"), `[`, 1)
+igraci$Position <- as.factor(igraci$Position)
+
+df = data.frame(hand = igraci$Hand, position = igraci$Position)
+
+ggplot(df , aes(hand, ..count..))+ geom_bar(aes(fill = position) ,position = "dodge")
+
+
+```
+Iz grafa vidimo da puno više lijevaka igra na poziciji LW nego dešnjaka, te da puno više dešnjaka igra na poziciji RW nego lijevaka. Također je vidljivo da ima značajno više lijevaka nego dešnjaka što je vrlo neočekivano. Kako bi provjerili jesu li te razlike statistički značajne napravit ćemo test prilagodbe razdiobi, tj. hi-kvadrat test.
+
+```{r}
+test <- chisq.test(table(df$hand, df$position))
+#Kontingencijska tablica
+test$expected
+
+#Stvarna tablica
+test$observed
+```
+Prvo gledamo kontingencijsku tablicu te vidimo da imamo dovoljan broj očekivanih vrijednosti u svakoj ćeliji tablice (U svakoj ćeliji više od 5). 
+Također usporedbom dviju tablica jasno je vidljivo da postoje značajne razlike u vrijednostima te očekujemo da će test odbaciti nultu hipotezu da je uniformna razdioba lijevaka i dešnjaka u odnosu na poziciju.
+```{r}
+test
+```
+Izvršavanjem Hi-kvadrat testa dobili smo očekivane rezultate. Pogledom na p-vrijednost dobivenu ovim testom, možemo sa sigurnošću odbaciti nul hipotezu(p-vrijednost je izrazito mala) te logički zaključiti da su preferirana ruka igrača i pozicija na kojoj igrač igra međusobno zavisne na bilo kojoj razini značajnosti.
+
+### Zanimljivost - Razdioba ljevaka i dešnjaka u hokeju u odnosu na prosjek
+Tijekom prethodne analize zavisnosti igračeve preferirane ruke i pozicije na kojoj igra uočili smo jednu zanimljivost, a to je da ima značajno više ljevaka nego dešnjaka među hokejašima. Sada želimo provjeriti je li moguće da je to slučajnost ili je to specifičnost hokeja.
+
+Kratkom pretragom interneta otkrili smo da dešnjaci čine oko 90% populacije, a ljevaci preostalih 10%. 
+
+Znači da bi slučajnu varijablu koja određuje je li netko dešnjak ili ljevak mogli definirati kao binomnu slučajnu varijablu s parametrom p = 0.9 i q = 0.1.
+Ako ima x dešnjaka, moramo izračunati koja je vjerojatno da bude x ili manje dešnjaka u n realizacija te binomne slučajne varijable
+
+```{r broj desnjaka i lijevaka}
+brojLjevaka <- nrow(igraci[igraci$Hand == 'L',])
+brojDesnjaka <- nrow(igraci[igraci$Hand == 'R',])
+#ukupni broj observacija(igrača)
+n <- nrow(igraci)
+
+x <- rbinom(10, n, 0.1)
+x
+```
+Vidimo da u 10 različitih realizacija najviše smo slučajno dobili `r max(x)` ljevaka a mi ih u uzorku imamo `r brojLjevaka`. Sigurno ćemo odbaciti hipotezu da je stvarni udio ljevaka 10%.
+
+```{r handedness test}
+x <- pbinom(brojDesnjaka, n, 0.9)
+x
+```
+Vidimo da kao što je i očekivano p vrijednost je ekstremno malena te ne možemo na smislenom nivou značajnosti tvrditi da je stvarni udio ljevaka među hokejašima 10%.
+
+Nakon još malo istraživanja otkrili smo da se djeca dok su još malena uče igrati hokej tako da jačom rukom drže vrh štapa, što je razlog zašto puno djece kad odraste nastavi igrati tako te koristiti štap za ljevake, čime ulaze u statistiku kao ljevaci.
+
+## Provjera zavisnosti pozicije igrača i broja osvojenih bodova
+
+Zanima nas osvajaju li igrači na svim pozicijama jednako bodova ili ipak neke pozicije osvajaju više bodova od ostalih. Očekujemo da će igrači na napadačkim pozicijama(LW, C, RW) osvajati više bodova od igrača u obrani(D).
+
+```{r pts position plot, echo=FALSE}
+
+PTS <- data.frame(igraci$PTS)
+
+df2 = data.frame(PTS = igraci$PTS, position = igraci$Position)
+
+boxplot(df2$PTS ~ df2$position,
+        main = "Usporedba bodova po pozicijama",
+        ylab = "bodovi",
+        xlab = "pozicija",
+        col = "lightblue")
+
+```
+
+Iz ovog vizualnog prikaza na prvu možemo vidjeti da sve pozicije otprilike imaju jednaki medijan bodova uz manje razlike te neznatno različite raspršenosti. No u sljedećem testu ćemo upravo provjeriti jednakost bodova i provjeriti dali su sve pozicije jednake po bodovima ili postoje odstupanja, te logički zaključiti jesu li pozicija i broj bodova međusobno zavisne varijable.
+
+
+Prije nego provedemo ANOVA test moramo provjeriti pretpostavke:
+- nezavisnost pojedinih podataka u uzorcima,
+- normalna razdioba podataka,
+- homogenost varijanci među populacijama
+
+Podatci su nezavisni jer svaki redak predstavlja drugog igrača. Možda postoji sitna zavisnost budući da igrači igraju zajedno u timovima a svaki tim najčešće sličan broj na svakoj poziciji(npr. 4 obrambena igrača) što bi značilo da odabir zadnjeg igrača za tim nije u potpunosti nezavisan, no smatramo da je to vrlo malena količina zavisnosti na poprilično veliki skup podataka te da ne stvara problem.
+
+Iz grafa je vidljivo da su grupe okvirno podjednake veličine, što je uvijek poželjno. Provesti ćemo Lillieforsovu inačicu Kolmogorov-Smirnovljev testa kako bi provjerili pretpostavku o normalnosti.
+
+```{r lillie, echo=FALSE}
+
+#grupiranje podataka
+df2 %>%
+  group_by(position) %>%
+  get_summary_stats(PTS, type = "mean_sd")
+
+df2$position <- as.factor(df2$position)
+
+#provođenje testova
+lillie.test(scale(df2$PTS[df2$position=='RW']))
+lillie.test(scale(df2$PTS[df2$position=='LW']))
+lillie.test(scale(df2$PTS[df2$position=='C']))
+lillie.test(scale(df2$PTS[df2$position=='D']))
+
+p1 <- qplot(PTS, data = df2[df2$position=='RW',],
+            binwidth = 10,
+            xlab="RW",
+            fill=I("lightblue"), 
+            col=I("black"))
+p2 <- qplot(PTS, data = df2[df2$position=='LW',],
+            binwidth = 10,
+            xlab="LW",
+            fill=I("lightblue"), 
+            col=I("black"))
+p3 <- qplot(PTS, data = df2[df2$position=='C',],
+            binwidth = 10,
+            xlab="C",
+            fill=I("lightblue"), 
+            col=I("black"))
+p4 <- qplot(PTS, data = df2[df2$position=='D',],
+            binwidth = 10,
+            xlab="D",
+            fill=I("lightblue"), 
+            col=I("black"))
+
+#grid.arrange(p1, p2, p3, p4, nrow = 2, ncol = 2)
+
+```
+Test je odbacio pretpostavku o normalnosti podataka no smatramo da nije toliko loša situacija na temelju histograma pa ćemo pogledati je li varijanca među populacijama homogena koristeći Bartlettov test te ako je ćemo nastaviti s ANOVOM.
+
+```{r}
+
+bartlett.test(df2$PTS ~ df2$position)
+
+var((df2$PTS[df2$position=='LW']))
+var((df2$PTS[df2$position=='RW']))
+var((df2$PTS[df2$position=='C']))
+var((df2$PTS[df2$position=='D']))
+
+```
+Iako Bartlettov test odbacuje hipotezu o jednakosti varijanci. Budući da su varijance vrlo slične osim za obrambene igraće, a ni kod njih nije jako loša situacija, provesti ćemo ANOVU do kraja.
+```{r}
+#ANOVA test
+a = aov(df2$PTS ~ df2$position)
+summary(a)
+
+```
+Iz gornje ANOVA tablice vidljivo je da postoje značajne razlike između skupina (p = 2,45e-06) te možemo odbaciti nultu hipotezu tj. odbacujemo hipotezu da su srednje vrijednosti bodova svake pozicije jednake. Logički zaključujemo da vrlo vjerojatno postoji zavisnost između pozicije na kojoj igrač igra i osvojenih bodova tog igrača.
+
+
+## Provjera zavisnosti težine golmana s postotkom obrana
+Očekujemo da su težina golmana i postotak obrana nezavisne varijable.
+
+```{r, echo=FALSE}
+print("Podjela težine golmana u kategorije")
+print("do 80kg - lagan(l)")
+print("80-90kg - srednje tezak(st)")
+print("90-100kg - tezak(t)")
+print("preko 100kg - jako tezak(jt)")
+golmani$tezKat1 <- cut(golmani$Wt, breaks = c(-Inf, 177, 200, 220, Inf),
+labels = c("l", "st", "t", "jt"))
+
+tezObr <- data.frame(golmani$tezKat1, golmani$SV.)
+
+#Izbacivanje N.A vrijednosti i drugih neispravnih vrijednosti
+tezObr <- tezObr[!apply(is.na(tezObr) | tezObr == "" | tezObr$golmani.SV. == "0", 1, all),]
+
+summary(tezObr)
+```
+Prvo provjeravamo imamo li dovoljno opservacija u svakoj kategoriji. Vidimo da je samo 6 opservacija u kategoriji lagan te samo 10 opservacija u kategoriji jako težak. Kako bi malo izjednačili broj opservacija po kategorijama pomaknuti ćemo kategoriju lagan do 83kg i kategoriju jako težak od 98kg.
+
+```{r, echo=FALSE}
+print("Preraspodjela golmana u kategorije")
+print("do 83kg - lagan(l)")
+print("#83-90kg - srednje tezak(st)")
+print("#90-98kg - tezak(t)")
+print("#preko 98kg - jako tezak(jt)")
+golmani$tezKat2 <- cut(golmani$Wt, breaks = c(-Inf, 183, 200, 216, Inf),
+labels = c("l", "st", "t", "jt"))
+
+tezObr <- data.frame(tezina = golmani$tezKat2, postotakObr = golmani$SV.)
+
+#Izbacivanje N.A vrijednosti i drugih neispravnih vrijednosti
+tezObr <- tezObr[!apply(is.na(tezObr) | tezObr == "", 1, all),]
+
+summary(tezObr)
+```
+Sada kada su kategorije bolje raspodijeljene vizualizirat ćemo podatke pomoću box plota.
+
+```{r echo=FALSE}
+plot(tezObr, col = "lightblue")
+```
+Vidimo da imamo više outliera koji dosta odskaču i nemaju previše smisla. Recimo imamo bar 3 golmana koji imaju 100% obrana i imamo jednog golmana s 0% obrana što se vjerojatno desilo jer su igrali jako malo minuta ili jednostavno nisu ispravno uneseni podatci. Zato ćemo sada izbaciti sve golmane koji su igrali manje od 30 minuta tijekom sezone.
+
+Zanimljivost:
+Malo dubljim istraživanjem saznali smo da je golman kojeg vidimo u grafu s 0% obrana Jorge Alves, upravitelj opreme za Carolina Hurricanese, koji drži rekord za najkraću karijeru u povijesti NHL-a. Igrao je svega 7,6 sekundi kada je ušao da zamijeni golmana koji se ozlijedio.
+
+```{r echo=FALSE}
+golmaniv30 <- golmani[golmani$MIN > 30,]
+tezObr <- data.frame(tezina = golmaniv30$tezKat2, postotakObr = golmaniv30$SV.)
+
+#Izbacivanje N.A vrijednosti i drugih neispravnih vrijednosti
+tezObr <- tezObr[!apply(is.na(tezObr) | tezObr == "", 1, all),]
+
+plot(tezObr, col = "lightblue", ylim = c(0.8, 1))
+```
+Vidimo da smo izbacivanjem outliera dobili puno pregledniji i smisleniji graf. Vidimo da su medijani vrlo blizu za sve težinske kategorije te očekujemo da će ANOVA test pokazati da ne možemo odbaciti hipotezu o jednakosti srednjih vrijednosti.
+
+Prije provođenja ANOVE kao i ranije moramo provjeriti pretpostavke. Nezavisnost pojedinih podatak je ispunjena budući da je svaki podatak druga osoba, razdiobu podataka ćemo provjeriti pomoću Lillieforsove inačice Kolmogorov-Smirnovljev testa.
+
+```{r, echo=FALSE}
+lillie.test(scale(tezObr$postotakObr[tezObr$tezina=='l']))
+lillie.test(scale(tezObr$postotakObr[tezObr$tezina=='st']))
+lillie.test(scale(tezObr$postotakObr[tezObr$tezina=='t']))
+lillie.test(scale(tezObr$postotakObr[tezObr$tezina=='jt']))
+
+p1 <- qplot(postotakObr, data = tezObr[tezObr$tezina=='l',],
+            binwidth = 0.005,
+            xlab="l",
+            fill=I("lightblue"), 
+            col=I("black"))
+p2 <- qplot(postotakObr, data = tezObr[tezObr$tezina=='st',],
+            binwidth = 0.005,
+            xlab="st",
+            fill=I("lightblue"), 
+            col=I("black"))
+p3 <- qplot(postotakObr, data = tezObr[tezObr$tezina=='t',],
+            binwidth = 0.005,
+            xlab="t",
+            fill=I("lightblue"), 
+            col=I("black"))
+p4 <- qplot(postotakObr, data = tezObr[tezObr$tezina=='jt',],
+            binwidth = 0.005,
+            xlab="jt",
+            fill=I("lightblue"), 
+            col=I("black"))
+
+grid.arrange(p1, p2, p3, p4, nrow = 2, ncol = 2)
+```
+Iako Lilliefors odbacuje normalnost osim za laku kategoriju, smatramo da su rezultati dovoljno dobri te idemo dalje provjeriti homogenost varijance.
+```{r}
+bartlett.test(tezObr$postotakObr ~ tezObr$tezina)
+
+var((tezObr$postotakObr[tezObr$tezina=='l']))
+var((tezObr$postotakObr[tezObr$tezina=='st']))
+var((tezObr$postotakObr[tezObr$tezina=='t']))
+var((tezObr$postotakObr[tezObr$tezina=='jt']))
+```
+Budući da su razlike varijanci malene(iako je Bartlettov test odbacio hipotezu o jednakosti varijanci) provesti ćemo ANOVU.
+```{r}
+
+a = aov(tezObr$postotakObr ~ tezObr$tezina)
+summary(a)
+
+
+```
+Iako smo očekivali da će p vrijednosti biti veća, p vrijednost je ispala tek 6.3%. Što znači da na razini značajnosti od 5% ne odbacujemo hipotezu o različitosti srednjih vrijednosti postotka obrane golmana, no već na razini značajnosti od 7% bi mogli odbaciti tu hipotezu. Dakle nije lako zaključiti utječe li težina golmana na njegovu sposobnost branjenja. Budući da je uobičajeno koristiti razinu značajnosti od 5%, ne ćemo odbacit  hipotezu H0 i zaključiti da su srednje vrijednosti jednake.
+
+# Statistička analiza plaće
+
+
+## Obrada i Analiza plaće
+
+```{r placa, echo=FALSE}
+
+#Promjena formata place iz npr. 580,000$ u 580000
+igraci$Salary <- as.numeric(gsub('[$,]', '',igraci$Salary))
+golmani$Salary <- as.numeric(gsub('[$,]', '',golmani$Salary))
+
+#Pretvorba plaće u milijune dolara
+igraci <- transform(igraci, Salary = Salary / 1000000)
+golmani <- transform(golmani, Salary = Salary / 1000000)
+
+print("Prikaz formata plaće:")
+head(igraci$Salary)
+
+print("Sažetak plaća igrača:")
+summary(igraci$Salary)
+print("Sažetak plaća golmana:")
+summary(golmani$Salary)
+
+```
+Vidimo da za 142 igrača i 6 golmana nema podataka o plaći. Srednja vrijednost plaće igrača je 2.32 milijuna dolara a medijan tek 925 tisuća dolara. Srednja vrijednost plaće golmana je 2.58 milijuna dolara a medijan milijun dolara, dakle nešto više nego za igrače. Iz velike razlike srednje vrijednosti i medijana možemo iščitati veliku nagnutost distribucije ulijevo. Kako bi grafički prikazali ove podatke najbolje da pogledamo boxplot dijagrame.
+
+```{r boxplot placa, echo=FALSE}
+
+boxplot(igraci$Salary,
+        golmani$Salary,
+        names = c("igraci", "golmani"),
+        ylab = "Milijuni dolara",
+        main = "Plaće igraća i golmana",
+        col = "lightblue")
+
+```
+Iz boxplot dijagrama plaće igrača vidimo da 75% posto igrača ima plaću manju od 4 milijuna dolara. Budući da je medijan jako blizu prvog kvartila(Q1) možemo zaključiti da je distribucija jako nagnuta ulijevo što možemo provjeriti pomoću histograma. Iz boxplot dijagrama plaće golmana vidimo da je treći kvartil nešto viši (oko 4.5 milijuna dolara) te da je medijan neznatno udaljeniji od prvog kvartila što nam govori kako je distribucija plaće golmana možda malo manje nagnuta od distribucije plače igrača što ćemo najbolje provjeriti pomoću histograma. Također vidimo da je nešto veća raspršenost plaće golmana.
+
+
+```{r histograma placa, echo=FALSE, warning=FALSE}
+
+
+p1 <- qplot(Salary, data = igraci,
+            binwidth = 1,
+            xlab="igraci",
+            fill=I("lightblue"), 
+            col=I("black"))
+p2 <- qplot(Salary, data = golmani,
+            binwidth = 1,
+            xlab="golmani",
+            fill=I("lightblue"), 
+            col=I("black"))
+
+grid.arrange(p1, p2, nrow = 1)
+
+```
+
+Histogrami su vrlo slični, gotovo pa identični. Vidljivo je da distribucija plaća nije simetrična te se velika većina vrijednosti nalazi u intervalu do milijun dolara. Zaključujemo da se plaća ne ravna po normalnoj distribuciji.
+
+
+## Provjera zavisnosti pozicije igrača i njegove plaće
+
+Zanima nas jesu li igrači na svim pozicijama plaćeni jednako, ili su neke pozicije više plaćene.
+```{r, echo=FALSE}
+
+df4 <- data.frame(Salary = igraci$Salary, Position = igraci$Position)
+
+boxplot(df4$Salary ~ df4$Position,
+        ylim = c(0, 15),
+        main = "Usporedba plaće po pozicijama",
+        ylab = "bodovi",
+        xlab = "pozicija",
+        col = "lightblue")
+```
+Iz grafa vidimo da ne postoje gotovo nikakve razlike između plaća igrača na različitim pozicijama.
+```{r}
+
+model2 = lm(df4$Salary~df4$Position, data = df4)
+
+summary(model2)
+
+df4 <- df4[complete.cases(df4),]
+
+```
+U ovom slučaju naš linearan model u kojem gledamo dali je  pozicija igrača statistički značajna varijabla ne daje dobre rezultate te pogledom na p-vrijednosti pozicija možemo zaključiti da pozicija nije statistički značajna. Mogli bi logički zaključiti da su igrači na svim pozicijama podjednako plaćeni.
+
+
+Testirat ćemo jednakost srednjih vrijednosti plaće po pozicijama pomoću ANOVE. Da bi to mogli potrebno je zadovoljiti kriterije ANOVE kao i u prethodnom primjeru. Pretpostavka nezavisnosti je zadovoljena budući da svaki redak predstavlja jednog igrača. Sada ćemo provjeriti pretpostavku normalnosti pomoću Lillieforseove inačice KS testa kao i ranije.
+
+```{r, echo=FALSE}
+df4 %>%
+  group_by(Position) %>%
+  get_summary_stats(Salary, type = "mean_sd")
+
+df4$Position <- as.factor(df4$Position)
+
+summary(df4$Salary)
+
+#Provođenje lillieforsove inačice KS testa
+lillie.test(scale(df4$Salary[df4$Position=='RW']))
+lillie.test(scale(df4$Salary[df4$Position=='LW']))
+lillie.test(scale(df4$Salary[df4$Position=='C']))
+lillie.test(scale(df4$Salary[df4$Position=='D']))
+
+p1 <- qplot(Salary, data = df4[df4$Position=='RW',],
+            binwidth = 0.5,
+            xlab="RW",
+            fill=I("lightblue"), 
+            col=I("black"))
+p2 <- qplot(Salary, data = df4[df4$Position=='LW',],
+            binwidth = 0.5,
+            xlab="LW",
+            fill=I("lightblue"), 
+            col=I("black"))
+p3 <- qplot(Salary, data = df4[df4$Position=='C',],
+            binwidth = 0.5,
+            xlab="C",
+            fill=I("lightblue"), 
+            col=I("black")) 
+p4 <- qplot(Salary, data = df4[df4$Position=='D',],
+            binwidth = 0.5,
+            xlab="D",
+            fill=I("lightblue"), 
+            col=I("black"))
+
+grid.arrange(p1, p2, p3, p4, nrow = 2, ncol = 2)
+
+```
+
+Test odbacuje hipotezu o normalnosti podatak i iz histogram je vidljivo da je pretpostavka normalnosti ozbiljno narušena te ne možemo provesti ANOVU u ovom slučaju.
+
+## Provjera zavisnosti tima(kluba) igrača i njegove plaće
+
+Zanima nas jesu li igrači nekih klubova plaćeni više od igrača drugih klubova, tj. jesu li u prosjeku igrači svih klubova jednako plaćeni. Očekujemo da ne plaćaju svi klubovi isto svoje igrače već da bogatiji klubovi više plaćaju svoje igrače.
+
+```{r, echo=FALSE}
+#Obrađivanje slučajeva kada su za igrača navedena dva tima 
+igraci$Team <- sapply(strsplit(igraci$Team, split = "/"), `[`, 1)
+igraci$Team <- as.factor(igraci$Team)
+
+
+df5 = data.frame(Salary = igraci$Salary, Team = igraci$Team)
+
+df5 <- df5[complete.cases(df5),]
+
+
+boxplot(df5$Salary ~ df5$Team, col = "lightblue",
+        xlab = "klub",
+        ylab = "plaća")
+
+```
+Iz histograma je vidljivo da postoje neke razlike između prosječne plaće u klubovima no ne vrlo značajne, pretpostavljamo da s testom nećemo moći odbaciti hipotezu da su srednje vrijednosti plaća jednake za svaki tim.
+
+Prije provođenja ANOVE kao i ranije moramo provjeriti pretpostavke. Nezavisnost pojedinih podatak je ispunjena, razdiobu podatak ćemo provjeriti pomoću Lillieforsove inačice Kolmogorov-Smirnovljev testa. Provjeravamo samo za nekoliko timova budući da će rezultati za sve timove biti podjednaki.
+
+```{r, echo=FALSE}
+#Provođenje lillieforsove inačice KS testa
+lillie.test(scale(df5$Salary[df5$Team=='CHI']))
+lillie.test(scale(df5$Salary[df5$Team=='DET']))
+lillie.test(scale(df5$Salary[df5$Team=='BOS']))
+
+p1 <- qplot(Salary, data = df5[df5$Team=='CHI',],
+            binwidth = 0.5,
+            xlab="CHI",
+            fill=I("lightblue"), 
+            col=I("black")) 
+p2 <- qplot(Salary, data = df5[df5$Team=='DET',],
+            binwidth = 0.5,
+            xlab="DET",
+            fill=I("lightblue"), 
+            col=I("black")) 
+p3 <- qplot(Salary, data = df5[df5$Team=='BOS',],
+            binwidth = 0.5,
+            xlab="BOS",
+            fill=I("lightblue"), 
+            col=I("black")) 
+
+grid.arrange(p1, p2, p3, nrow = 2, ncol = 2)
+```
+
+
+Iz rezultata testa vidimo da podatci nisu normalni, te iz histograma vidimo da su odstupanja značajna te zaključujemo da ne smijemo koristiti ANOVU u ovom slučaju.
+
+
+
+# Linearni modeli za plaće
+
+Prije nego što prihvatimo linearan model, prvo moramo biti sigurni da su ispunjene četiri pretpostavke:
+
+1. Linearna veza: Postoji linearna veza između ovisne varijable x i nezavisnih varijabli y,z...
+
+2. Nezavisnost.
+
+3. Homoskedastičnost: Reziduali imaju konstantnu varijancu na svakoj razini x-a.
+
+4. Normalnost: Reziduali modela imaju normalnu distribuciju.
+
+Ako se prekrši jedna ili više ovih pretpostavki, tada rezultati naše linearne regresije mogu biti nepouzdani. Za svaki model pozivom plot() metode možemo na temelju grafova ili pomoću pripadnih testova odrediti sve 4 pretpostavke i na taj način se uvjeriti da je model značajan. 
+
+U nastavku možemo vidjeti postupak dolaska i razvijanja linearnih regresijskih modela od jednostavnijih pa sve do završnih modela koji su se koristili pri predviđanju plaća. Završni modeli su proizvod stupnjevitog ažuriranja jednostavnih modela s novim varijablama koje su dodatno poboljšavale linearne regresijske modele.Pošto je prikazan postupak dolaska do završnog modela pretpostavke koje trebaju vrijediti za svaki od njih smo odlučili prikazati samo za završne modele iz razloga da ne dolazi do  redundancije koda i teksta , no testovi su napravljeni te za svaki od jednostavnijih modela vrijedi uspostavljen linearni odnos , neovisnost , normalnost te homoskedastičnost.
+
+## Linearni model za predikciju plaće na temelju broja bodova
+
+```{r , include=FALSE}
+draftOverall <- igraci$Ovrl
+Salary <- igraci$Salary
+
+```
+
+Očekujemo da će igrači koji osvajaju veći broj bodova imati veće plaće.
+
+```{r}
+Salary <- data.frame(igraci$Salary)
+
+PTS <- data.frame(igraci$PTS)
+
+df3 <- data.frame(Salary,PTS)
+
+plot(df3$igraci.PTS,df3$igraci.Salary,
+     ylab = "Plaća",
+     xlab = "Bodovi",
+     col= "black",
+     bg = "lightblue",
+     cex = 0.7,
+     pch = 21)
+
+abline(lm(df3$igraci.Salary~df3$igraci.PTS), col="red")
+
+model1 = lm(df3$igraci.Salary~df3$igraci.PTS, data = df3)
+
+
+summary(model1)
+
+```
+Budući da je p-vrijednost jako niska (p <0,001), možemo  zaključiti da PTS ima statistički značajan učinak na plaću igrača. Iz t-testa koji ima jako veliku vrijednost možemo zaključiti da su varijable plaća i PTS zavisne. Ako pogledamo R-kvadrat , on nam mjeri udio varijacije u našoj ovisnoj varijabli (Plaća) objašnjenu  neovisnom varijablom (Bodovi) a on je u našem slučaju 0.3878 , iz čega možemo zaključiti da bi ovaj linearni model mogao objasniti ~ 38% odstupanja od dobivenih vrijednosti.
+
+
+## Linearni regresijski model za predviđanje plaće koristeći godine igrača i Ovrl
+
+
+```{r , include=FALSE}
+draftOverall <- igraci$Ovrl
+Salary <- igraci$Salary
+
+```
+
+
+```{r}
+
+born <- ymd(igraci$Born)
+playerAge <- 2017 - year(born)
+
+model4 = lm(Salary ~ playerAge + draftOverall)
+
+summary(model4)
+
+car::vif(model4)
+```
+
+```{r,echo=FALSE}
+
+par(mfrow=c(2,2))
+plot(model4, which = 1, col = "black", bg = "lightblue", pch = 21)
+plot(model4, which = 2, col = "black", bg = "lightblue", pch = 21)
+plot(model4, which = 3, col = "black", bg = "lightblue", pch = 21)
+plot(model4, which = 5, col = "black", bg = "lightblue", pch = 21)
+
+```
+
+
+Prvi pokušaj u stvaranju regresijskog modela napravljen je s varijablama playerAge i draftOverall. Iz sumiranog modela možemo vidjeti da su obje varijable uz malu p-vrijednost statistički značajne. Proveli smo usporedbu za međuovisnost između  korištenih varijabli te se u ovom slučaju pokazalo da su doista nezavisne što možemo saznati naredbom vif(model4) gdje su vrijednosti jako malene(skoro jednake 1). Možemo zaključiti da je ovo dobar pokušaj u stvaranju  modela za predviđanje plaće igrača.
+
+## Linearni regresijski model za predviđanje plaće koristeći godine igrača, Ovrl i TOI/GP
+
+Ovaj model je nadogradnja na prethodni model s varijablom TOI/GP.
+
+```{r , echo=FALSE}
+
+toiGp <- igraci$TOI.GP
+
+```
+
+
+
+```{r}
+model5 = lm(Salary ~ playerAge + draftOverall + toiGp)
+
+summary(model5)
+
+car::vif(model5)
+
+
+```
+
+```{r,echo=FALSE}
+
+par(mfrow=c(2,2))
+plot(model5, which = 1, col = "black", bg = "lightblue", pch = 21)
+plot(model5, which = 2, col = "black", bg = "lightblue", pch = 21)
+plot(model5, which = 3, col = "black", bg = "lightblue", pch = 21)
+plot(model5, which = 5, col = "black", bg = "lightblue", pch = 21)
+
+
+```
+
+Iz ovog modela vidimo da su zbog malenih p-vrijednosti sve varijable statistički značajne te je dodavanjem varijable toiGp poboljšalo model. Iz naredbe vif(model5) možemo vidjeti da su varijable korištene u modelu međusobno nezavisne.
+
+
+
+```{r}
+
+anova(model4,model5)
+
+```
+
+Iz rezultata testa ANOVE možemo zaključiti da je model5 bolji. To možemo iščitati iz tablice gdje vidimo da je p-vrijednost jako mala , što znači da je dodavanje varijabli toiGp značajno poboljšalo model.
+
+
+
+# Odabir završnog modela
+
+Postoje različiti atributi koji određuju plaću te se oni razlikuju s obzirom na kojoj poziciji igrač igra. Razdvajanjem modela po pozicijama smo uspjeli objasniti veći postotak odstupanja a samim time nam je model postao bolji za previđanje plaća.
+
+```{r , echo=FALSE}
+
+`%notin%` <- Negate(`%in%`)
+foward <- igraci[igraci$Position %notin% "D",]
+
+g <- ymd(foward$Born)
+playerAge <- 2017 - year(g)
+
+Salary <- foward$Salary
+
+toiGp <- foward$TOI.GP
+
+draftOverall <- foward$Ovrl
+GS.G <- foward$GS.G
+
+```
+
+
+## Model za igrače napada
+
+Za završni model koji ćemo koristiti u previđanju plaće igračima napada nadogradili smo prethodni model dodajući varijablu GS.G(Prosječni rezultat igrača)
+
+```{r}
+
+
+model7 = lm(Salary ~ playerAge  + toiGp+ GS.G,data = foward)
+
+summary(model7)
+
+car::vif(model7)
+
+```
+
+```{r,echo=FALSE}
+
+par(mfrow=c(2,2))
+plot(model7, which = 1, col = "black", bg = "lightblue", pch = 21)
+plot(model7, which = 2, col = "black", bg = "lightblue", pch = 21)
+plot(model7, which = 3, col = "black", bg = "lightblue", pch = 21)
+plot(model7, which = 5, col = "black", bg = "lightblue", pch = 21)
+
+scatter.smooth(x=playerAge + toiGp+GS.G, y=Salary, col = "black",
+               bg = "lightblue",pch=21,
+               main="Salary ~ playerAge + toiGp + GS.G")
+
+
+```
+
+## Model za igrače obrane
+
+Za završni model koji ćemo koristiti u previđanju plaće igračima obrane nadogradili smo prethodni model s dvije nove varijable , iFF(Pokušaji odblokiranog udarca) i iHA(sudari u tijelo od strane drugog igrača kako bi oduzeo "puck")
+
+```{r , echo=FALSE}
+
+defence <- igraci[igraci$Position %in% "D",]
+
+g <- ymd(defence$Born)
+playerAge <- 2017 - year(g)
+
+Salary <- defence$Salary
+
+toiGp <- defence$TOI.GP
+
+iCF <- defence$iCF
+
+iBlk <- defence$iBLK
+
+iHA <- defence$iHA
+
+iFF <- defence$iFF
+
+draftOverall <- defence$Ovrl
+
+```
+
+```{r}
+
+model8 = lm(Salary ~ playerAge  +toiGp + iFF +iHA
+           ,data = defence)
+
+summary(model8)
+
+car::vif(model8)
+
+
+```
+
+
+```{r,echo = FALSE}
+
+
+par(mfrow=c(2,2))
+plot(model8, which = 1, col = "black", bg = "lightblue", pch = 21)
+plot(model8, which = 2, col = "black", bg = "lightblue", pch = 21)
+plot(model8, which = 3, col = "black", bg = "lightblue", pch = 21)
+plot(model8, which = 5, col = "black", bg = "lightblue", pch = 21)
+
+scatter.smooth(x=playerAge + toiGp+iFF+iHA, y=Salary, col = "black", 
+               bg = "lightblue", pch = 21 ,
+               main="Salary ~ playerAge + toiGp + iFF + iHA") 
+
+```
+Svojstvo linearne veze možemo najlakše iščitati iz scatter plota gdje vizualno vidimo linearnu vezu između promatranih varijabla. Za svojstvo normalnosti možemo pogledati Q-Q graf , ako vrijednosti podataka u grafu padaju približno duž pravca, tada se podaci normalno distribuiraju.Budući da svaki podatak predstavlja drugog igrača svojstvo nezavisnosti je sigurno zadovoljeno. Provjeru za homoskedastičnost možemo provjeriti na grafu "residuals vs fitted" gdje gledamo crvenu liniju koja je otprilike poravnata s vrijednosti 0 na y osi , te je ključno da se reziduali ne povećavaju kako se povećavaju izračunate vrijednosti.Iz našeg primjera možemo zaključiti da heteroskedastičnost ne postoji te možemo prihvatiti ovaj regresijski model.
+
+
+
+# Predviđanje plaće igračima
+
+## Prikaz rezultata predviđanja plaće igračima napada
+
+
+```{r, echo = FALSE}
+
+print("3.5 mil (stvarna vrijednost)")
+predict(model7, data.frame(playerAge = 28,toiGp = 18.05,GS.G= 0.75))
+
+print("5.2 mil (stvarna vrijednost)")
+predict(model7, data.frame(playerAge = 26,toiGp = 13.90,GS.G= 0.41))
+
+print("0.715 mil (stvarna vrijednost)")
+predict(model7, data.frame(playerAge = 24,toiGp = 11.73,GS.G= 0.28))
+
+```
+
+
+## Prikaz rezultata predviđanja plaće igračima obrane
+
+```{r,echo= FALSE}
+
+
+print("0.635 mil (stvarna vrijednost)")
+predict(model8, data.frame(playerAge = 24,toiGp = 16.09,iFF= 9,iHA = 8))
+
+print("7 mil(stvarna vrijednost)")
+predict(model8, data.frame(playerAge = 33,toiGp = 20.73,iFF= 235,iHA = 109))
+
+print("5.6 mil (stvarna vrijednost)")
+predict(model8, data.frame(playerAge = 34,toiGp = 22.40,iFF= 139,iHA = 115))
+
+
+```
+
